@@ -8,8 +8,11 @@ import time
 # Initialize Databricks configuration
 cfg = Config()
 
-# Ensure warehouse ID is set
+# Ensure environment variables are set
 assert os.getenv('DATABRICKS_WAREHOUSE_ID'), "DATABRICKS_WAREHOUSE_ID must be set in the environment."
+assert os.getenv('CATALOG'), "CATALOG must be set in the environment."
+assert os.getenv('SCHEMA'), "SCHEMA must be set in the environment."
+
 http_path = f"/sql/1.0/warehouses/{os.getenv('DATABRICKS_WAREHOUSE_ID')}"
 
 # Cache the connection
@@ -17,7 +20,10 @@ http_path = f"/sql/1.0/warehouses/{os.getenv('DATABRICKS_WAREHOUSE_ID')}"
 def get_connection():
     user_token = st.context.headers.get('X-Forwarded-Access-Token')
     if not user_token:
-        raise ValueError("User token not found in request headers.")
+        # check if it's in an env variable
+        user_token = os.getenv('USER_TOKEN')
+        if not user_token:
+            raise ValueError("User token not found in request headers.")
     return sql.connect(
         server_hostname=cfg.host,
         http_path=http_path,
@@ -53,15 +59,25 @@ def get_primary_key(catalog, schema, table):
             return [row['column_name'] for row in rows]
         return []
 
-# Read table data
+# Read table data without caching
 def read_table(table_name: str) -> pd.DataFrame:
     conn = get_connection()
     with conn.cursor() as cursor:
         cursor.execute(f"SELECT * FROM {table_name}")
         df = cursor.fetchall_arrow().to_pandas()
+    
+    # Convert timestamp columns
+    for col in ['CreatedAt', 'UpdatedAt']:
+        if col in df.columns and not pd.api.types.is_datetime64_any_dtype(df[col]):
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+            if pd.api.types.is_numeric_dtype(df[col]):
+                max_val = df[col].max()
+                unit = 'ms' if max_val >= 1e12 else 's'
+                df[col] = pd.to_datetime(df[col], unit=unit, utc=True)
+    
     return df
 
-# Save changes with MERGE
+# Save changes with MERGE including delete functionality
 def save_changes(table_name: str, source_df: pd.DataFrame, primary_keys: list, all_columns: list, conn):
     if not primary_keys:
         st.error(f"No primary key defined for table {table_name}. Cannot perform upsert or delete.")
@@ -135,9 +151,9 @@ def format_value(value, dtype):
 # Streamlit UI
 st.title("Configuration Editor")
 
-# Schema details
-catalog = "john_armstrong"
-schema = "configurations"
+# Schema details from environment variables
+catalog = os.getenv('CATALOG')
+schema = os.getenv('SCHEMA')
 tables = get_tables(catalog, schema)
 
 # Initialize refresh counters in session state
@@ -175,11 +191,9 @@ for full_table in tables:
                 edited_keys = set(edited_df[primary_keys].itertuples(index=False, name=None))
                 deleted_keys = original_keys - edited_keys
                 delete_rows = original_df[original_df[primary_keys].apply(lambda row: tuple(row), axis=1).isin(deleted_keys)].copy()
-                # Set non-primary key columns to None for delete rows
                 for col in delete_rows.columns:
                     if col not in primary_keys:
                         delete_rows[col] = None
-                # Create source_df with is_delete column
                 source_df = pd.concat([edited_df.assign(is_delete=False), delete_rows.assign(is_delete=True)])
                 conn = get_connection()
                 save_changes(full_table, source_df, primary_keys, list(original_df.columns), conn)
