@@ -1,5 +1,5 @@
 # Configuration Editor
-![s09593405062025](https://a.okmd.dev/md/681a15c939929.png)
+![s10513905062025](https://a.okmd.dev/md/681a21fcc3f1e.png)
 This Streamlit app allows users to view, edit, and manage configuration tables stored in Delta Lake and cataloged with Unity Catalog. The app provides a modern, user-friendly interface for interacting with configuration data, supporting operations like adding, updating, and deleting rows in the tables.
 ## Features
 
