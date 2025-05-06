@@ -61,16 +61,16 @@ def read_table(table_name: str) -> pd.DataFrame:
         df = cursor.fetchall_arrow().to_pandas()
     return df
 
-# Save changes with MERGE using dynamic primary keys and auto-filled timestamps
-def save_changes(table_name: str, df: pd.DataFrame, primary_keys: list, conn):
+# Save changes with MERGE
+def save_changes(table_name: str, source_df: pd.DataFrame, primary_keys: list, all_columns: list, conn):
     if not primary_keys:
-        st.error(f"No primary key defined for table {table_name}. Cannot perform upsert.")
+        st.error(f"No primary key defined for table {table_name}. Cannot perform upsert or delete.")
         return
 
     try:
         # Exclude timestamp columns from the temporary view
         columns_to_exclude = ['CreatedAt', 'UpdatedAt']
-        df_for_view = df.drop(columns=[col for col in columns_to_exclude if col in df.columns])
+        df_for_view = source_df.drop(columns=[col for col in columns_to_exclude if col in source_df.columns])
         temp_view = f"temp_{table_name.replace('.', '_')}_{int(time.time())}"
         columns = ', '.join(df_for_view.columns)
         values_list = [
@@ -87,8 +87,8 @@ def save_changes(table_name: str, df: pd.DataFrame, primary_keys: list, conn):
         with conn.cursor() as cursor:
             cursor.execute(create_view_sql)
 
-        # Define all columns and source columns for MERGE
-        all_columns = list(df.columns)
+        # Define MERGE components
+        on_clause = ' AND '.join([f"t.{pk} = s.{pk}" for pk in primary_keys])
         source_columns = [col for col in all_columns if col not in columns_to_exclude]
         update_set = ', '.join([f"t.{col} = s.{col}" for col in source_columns if col not in primary_keys])
         if update_set:
@@ -100,17 +100,15 @@ def save_changes(table_name: str, df: pd.DataFrame, primary_keys: list, conn):
             for col in all_columns
         ]
         insert_values = ', '.join(insert_values_list)
-        on_clause = ' AND '.join([f"t.{pk} = s.{pk}" for pk in primary_keys])
 
-        # Construct and execute MERGE statement
+        # Construct MERGE statement with delete clause
         merge_sql = f"""
         MERGE INTO {table_name} AS t
         USING {temp_view} AS s
         ON {on_clause}
-        WHEN MATCHED THEN
-            UPDATE SET {update_set}
-        WHEN NOT MATCHED THEN
-            INSERT ({insert_columns}) VALUES ({insert_values})
+        WHEN MATCHED AND s.is_delete = TRUE THEN DELETE
+        WHEN MATCHED AND s.is_delete = FALSE THEN UPDATE SET {update_set}
+        WHEN NOT MATCHED AND s.is_delete = FALSE THEN INSERT ({insert_columns}) VALUES ({insert_values})
         """
 
         with conn.cursor() as cursor:
@@ -123,6 +121,8 @@ def save_changes(table_name: str, df: pd.DataFrame, primary_keys: list, conn):
 def format_value(value, dtype):
     if pd.isnull(value):
         return 'NULL'
+    if dtype == 'bool':
+        return str(value).upper()
     if dtype == 'object':
         escaped_value = str(value).replace("'", "''")
         return f"'{escaped_value}'"
@@ -153,32 +153,40 @@ for full_table in tables:
             st.error(f"No primary key found for table {table_name}. Editing is disabled.")
             continue
 
-        # Initialize refresh counter for this table
         if full_table not in st.session_state.refresh_counters:
             st.session_state.refresh_counters[full_table] = 0
 
         try:
-            df = read_table(full_table)
-            # Make CreatedAt and UpdatedAt read-only
+            original_df = read_table(full_table)
             column_config = {
                 "CreatedAt": st.column_config.DatetimeColumn(disabled=True),
                 "UpdatedAt": st.column_config.DatetimeColumn(disabled=True)
             }
             edited_df = st.data_editor(
-                df,
+                original_df,
                 num_rows="dynamic",
                 hide_index=True,
                 column_config=column_config,
                 key=f"editor_{full_table}_{st.session_state.refresh_counters[full_table]}"
             )
             if st.button("Save Changes", key=f"save_{full_table}"):
+                # Detect deleted rows
+                original_keys = set(original_df[primary_keys].itertuples(index=False, name=None))
+                edited_keys = set(edited_df[primary_keys].itertuples(index=False, name=None))
+                deleted_keys = original_keys - edited_keys
+                delete_rows = original_df[original_df[primary_keys].apply(lambda row: tuple(row), axis=1).isin(deleted_keys)].copy()
+                # Set non-primary key columns to None for delete rows
+                for col in delete_rows.columns:
+                    if col not in primary_keys:
+                        delete_rows[col] = None
+                # Create source_df with is_delete column
+                source_df = pd.concat([edited_df.assign(is_delete=False), delete_rows.assign(is_delete=True)])
                 conn = get_connection()
-                save_changes(full_table, edited_df, primary_keys, conn)
-                # Increment refresh counter to reload data
+                save_changes(full_table, source_df, primary_keys, list(original_df.columns), conn)
                 st.session_state.refresh_counters[full_table] += 1
         except Exception as e:
             st.error(f"Error loading table {table_name}: {str(e)}")
 
 # Sidebar instructions
 st.sidebar.title("Instructions")
-st.sidebar.write("Expand a table to edit its data. Click 'Save Changes' to upsert the data using the table's primary key(s). Timestamps (CreatedAt and UpdatedAt) are automatically set to the current time on save and are not editable.")
+st.sidebar.write("Expand a table to edit its data. Add, edit, or delete rows, then click 'Save Changes' to upsert or delete data using the table's primary key(s). Timestamps (CreatedAt and UpdatedAt) are automatically set to the current time on save and are not editable.")
