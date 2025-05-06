@@ -5,6 +5,9 @@ from databricks import sql
 from databricks.sdk.core import Config
 import time
 
+# Set the page configuration
+st.set_page_config(page_title="Configuration Editor", layout="wide")
+
 # Initialize Databricks configuration
 cfg = Config()
 

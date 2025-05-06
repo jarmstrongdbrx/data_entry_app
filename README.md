@@ -39,6 +39,7 @@ Install the required dependencies: <br>
 ### Remote (Databricks Hosted)
 1. Edit the `app.yaml` to reflect the catalog & schema you wish to serve in the UI
 2. Create a new App in Databricks (New in the top left of workspace)
+3. Under the resources section, add a SQL Warehouse resource.  If you don't have an existing SQL Warehouse, create a new one (Preferably Serverless) then add it as a resource for the app.
 3. Once container is ready, sync this code to the source code location the app points to in your workspace <br>
 `databricks sync --watch . /Workspace/Users/{YOUR_EMAIL}/databricks_apps/{APP_NAME}/`
 4. Deploy the app using the UI or with CLI command
