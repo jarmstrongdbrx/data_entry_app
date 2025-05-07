@@ -132,7 +132,7 @@ def save_changes(table_name: str, source_df: pd.DataFrame, primary_keys: list, a
 
         with conn.cursor() as cursor:
             cursor.execute(merge_sql)
-        st.success("Changes saved successfully!")
+        st.toast("Changes saved successfully!", icon="✅")
     except Exception as e:
         st.error(f"Error saving changes: {str(e)}")
 
@@ -151,7 +151,71 @@ def format_value(value, dtype):
         escaped_value = str(value).replace("'", "''")
         return f"'{escaped_value}'"
 
-# Streamlit UI
+def handle_table_edits(full_table: str, original_df: pd.DataFrame, primary_keys: list):
+    """Handle the editing and saving of a single table."""
+    column_config = {
+        "CreatedAt": st.column_config.DatetimeColumn(disabled=True),
+        "UpdatedAt": st.column_config.DatetimeColumn(disabled=True)
+    }
+    
+    # Create unique keys for this table
+    editor_key = f"editor_{full_table}"
+    data_key = f"data_{full_table}"
+    changes_key = f"changes_{full_table}"
+    
+    # Initialize session state for this table's data if it doesn't exist
+    if data_key not in st.session_state:
+        st.session_state[data_key] = original_df.copy()
+        st.session_state[changes_key] = False
+    
+    # Use the data editor with the current data
+    edited_df = st.data_editor(
+        st.session_state[data_key],
+        num_rows="dynamic",
+        hide_index=True,
+        column_config=column_config,
+        key=editor_key,
+        on_change=lambda: setattr(st.session_state, changes_key, True)
+    )
+    
+    # Check if data has changed
+    data_changed = not edited_df.equals(st.session_state[data_key])
+    if data_changed:
+        st.session_state[changes_key] = True
+        st.session_state[data_key] = edited_df.copy()
+    
+    # Show save button if changes were made
+    if st.session_state[changes_key]:
+        if st.button("Save Changes", key=f"save_{full_table}"):
+            try:
+                # Detect deleted rows
+                original_keys = set(st.session_state[data_key][primary_keys].itertuples(index=False, name=None))
+                edited_keys = set(edited_df[primary_keys].itertuples(index=False, name=None))
+                deleted_keys = original_keys - edited_keys
+                
+                # Prepare rows for deletion
+                delete_rows = st.session_state[data_key][st.session_state[data_key][primary_keys].apply(lambda row: tuple(row), axis=1).isin(deleted_keys)].copy()
+                for col in delete_rows.columns:
+                    if col not in primary_keys:
+                        delete_rows[col] = None
+                
+                # Combine edited and deleted rows
+                source_df = pd.concat([
+                    edited_df.assign(is_delete=False),
+                    delete_rows.assign(is_delete=True)
+                ])
+                
+                # Save changes
+                conn = get_connection()
+                save_changes(full_table, source_df, primary_keys, list(st.session_state[data_key].columns), conn)
+                
+                # Reset changes flag
+                st.session_state[changes_key] = False
+                
+            except Exception as e:
+                st.error(f"Error saving changes: {str(e)}")
+
+# Main app layout
 st.title("Configuration Editor")
 
 # Schema details from environment variables
@@ -159,51 +223,42 @@ catalog = os.getenv('CATALOG')
 schema = os.getenv('SCHEMA')
 tables = get_tables(catalog, schema)
 
-# Initialize refresh counters in session state
-if 'refresh_counters' not in st.session_state:
-    st.session_state.refresh_counters = {}
-
 # Display tables
 for full_table in tables:
     table_name = full_table.split('.')[-1]
-    with st.expander(f"📋 {table_name}", expanded=False):
-        primary_keys = get_primary_key(catalog, schema, table_name)
-        if not primary_keys:
-            st.error(f"No primary key found for table {table_name}. Editing is disabled.")
-            continue
-
-        if full_table not in st.session_state.refresh_counters:
-            st.session_state.refresh_counters[full_table] = 0
-
-        try:
-            original_df = read_table(full_table)
-            column_config = {
-                "CreatedAt": st.column_config.DatetimeColumn(disabled=True),
-                "UpdatedAt": st.column_config.DatetimeColumn(disabled=True)
-            }
-            edited_df = st.data_editor(
-                original_df,
-                num_rows="dynamic",
-                hide_index=True,
-                column_config=column_config,
-                key=f"editor_{full_table}_{st.session_state.refresh_counters[full_table]}"
-            )
-            if st.button("Save Changes", key=f"save_{full_table}"):
-                # Detect deleted rows
-                original_keys = set(original_df[primary_keys].itertuples(index=False, name=None))
-                edited_keys = set(edited_df[primary_keys].itertuples(index=False, name=None))
-                deleted_keys = original_keys - edited_keys
-                delete_rows = original_df[original_df[primary_keys].apply(lambda row: tuple(row), axis=1).isin(deleted_keys)].copy()
-                for col in delete_rows.columns:
-                    if col not in primary_keys:
-                        delete_rows[col] = None
-                source_df = pd.concat([edited_df.assign(is_delete=False), delete_rows.assign(is_delete=True)])
-                conn = get_connection()
-                save_changes(full_table, source_df, primary_keys, list(original_df.columns), conn)
-                st.session_state.refresh_counters[full_table] += 1
-        except Exception as e:
-            st.error(f"Error loading table {table_name}: {str(e)}")
+    expander_key = f"expander_{full_table}"
+    
+    # Initialize expander state if not exists
+    if expander_key not in st.session_state:
+        st.session_state[expander_key] = False
+    
+    # Create a container for the table
+    table_container = st.container()
+    with table_container:
+        # Force expander to stay open if there are unsaved changes
+        changes_key = f"changes_{full_table}"
+        is_expanded = st.session_state[expander_key] or (changes_key in st.session_state and st.session_state[changes_key])
+        
+        with st.expander(f"📋 {table_name}", expanded=is_expanded):
+            try:
+                # Get primary keys
+                primary_keys = get_primary_key(catalog, schema, table_name)
+                if not primary_keys:
+                    st.error(f"No primary key found for table {table_name}. Editing is disabled.")
+                    continue
+                
+                # Read and display table data
+                original_df = read_table(full_table)
+                handle_table_edits(full_table, original_df, primary_keys)
+                
+            except Exception as e:
+                st.error(f"Error loading table {table_name}: {str(e)}")
 
 # Sidebar instructions
 st.sidebar.title("Instructions")
-st.sidebar.write("Expand a table to edit its data. Add, edit, or delete rows, then click 'Save Changes' to upsert or delete data using the table's primary key(s). Timestamps (CreatedAt and UpdatedAt) are automatically set to the current time on save and are not editable.")
+st.sidebar.write("""
+Expand a table to edit its data. Add, edit, or delete rows, then click 'Save Changes' to update the data.
+- Timestamps (CreatedAt and UpdatedAt) are automatically managed
+- Changes are saved using the table's primary key(s)
+- The editor will only show the save button when changes are detected
+""")
