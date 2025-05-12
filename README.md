@@ -6,8 +6,7 @@ This Streamlit app allows users to view, edit, and manage configuration tables s
 - Dynamic Table Listing: Automatically fetches and displays all tables from the specified schema configured via environment vairables.
 - Editable Data Grid: Users can view and edit table data in a grid format, with support for adding new rows, updating existing ones, and deleting rows.
 - Automatic Timestamp Handling: The app automatically manages CreatedAt and UpdatedAt timestamps, setting them to the current time during inserts and updates.
-- Delete Functionality: Supports row deletion through a programmatic is_delete flag, ensuring seamless integration with the MERGE statement.
-Primary Key Detection: Dynamically fetches primary keys for each table to ensure proper data merging.
+- Primary Key Detection: Dynamically fetches primary keys for each table to ensure proper data merging.
 - Modern UI: Uses expanders for a clean, card-like layout, with read-only timestamp columns and hidden technical fields.
 
 ## Installation
@@ -72,12 +71,3 @@ Frontend: Built with Streamlit, providing an interactive and dynamic user interf
 Backend: Connects to Databricks SQL Warehouse using the databricks-sql-connector to execute SQL queries. <br>
 
 Data Handling: Uses pandas DataFrames for data manipulation and temporary views for MERGE operations.
-
-### Key Components
-
-`get_connection`: Establishes and caches the connection to the Databricks SQL Warehouse. <br>
-`get_tables`: Fetches the list of tables from the specified schema.<br>
-`get_primary_key`: Dynamically retrieves primary keys for each table.<br>
-`read_table`: Fetches the latest data from the table without caching.<br>
-`save_changes`: Handles the MERGE operation, including inserts, updates, and deletes, with automatic timestamp management.<br>
-`format_value`: Formats DataFrame values for SQL insertion.
